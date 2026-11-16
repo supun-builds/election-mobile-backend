@@ -1,7 +1,7 @@
 const express  = require('express');
 const router   = express.Router();
 const mongoose = require('mongoose');
-const forge    = require('node-forge');
+const { decryptBallot } = require('../services/decryptor');
 
 // ── schemas 
 
@@ -36,11 +36,11 @@ const CandidateSchema = new mongoose.Schema({
 });
 
 const VoteSchema = new mongoose.Schema({
-  preferences:     String,
+  preferences:     mongoose.Schema.Types.Mixed,
   polling_station: String,
   station_code:    String,
   voted_at:        Date,
-}, { collection: 'vote' });
+}, { collection: 'vote', strict: false });
 
 const StationSchema = new mongoose.Schema({
   district_name:   String,
@@ -53,35 +53,6 @@ const StationSchema = new mongoose.Schema({
 const Candidate      = mongoose.model('Candidate',      CandidateSchema);
 const Vote           = mongoose.model('Vote',           VoteSchema);
 const PollingStation = mongoose.model('PollingStation', StationSchema);
-
-// ── Fernet decrypt 
-function decryptPreferences(encryptedText) {
-  try {
-    const keyBytes      = Buffer.from(process.env.VOTE_ENCRYPTION_KEY || process.env.FRIEND_ENCRYPTION_KEY, 'base64');
-    const encryptionKey = keyBytes.slice(16, 32);
-
-    const tokenBuf = Buffer.from(
-      encryptedText.replace(/-/g, '+').replace(/_/g, '/'),
-      'base64'
-    );
-
-    const iv         = tokenBuf.slice(9, 25);
-    const ciphertext = tokenBuf.slice(25, tokenBuf.length - 32);
-
-    const decipher = forge.cipher.createDecipher(
-      'AES-CBC',
-      forge.util.createBuffer(encryptionKey)
-    );
-    decipher.start({ iv: forge.util.createBuffer(iv) });
-    decipher.update(forge.util.createBuffer(ciphertext));
-
-    if (!decipher.finish()) return null;
-
-    return JSON.parse(decipher.output.toString());
-  } catch (_) {
-    return null;
-  }
-}
 
 // ── party colors 
 function getPartyColor(partyName) {
@@ -133,16 +104,21 @@ for (const c of candidates) {
   };
 }
 
-
   // decrypt and count first-preference votes
   for (const vote of votes) {
-    const prefs = decryptPreferences(vote.preferences);
-    if (!prefs) continue;
-    const firstChoice = prefs['1'];
-    if (firstChoice && map[firstChoice]) {
-      map[firstChoice].voteCount++;
+    try {
+      const prefs = decryptBallot(vote.preferences);
+      if (!prefs) continue;
+      const firstChoice = prefs['1'];
+      if (firstChoice && map[firstChoice]) {
+        map[firstChoice].voteCount++;
+      }
+    } catch (err) {
+      // Ballot decryption or validation failed (corrupted or tampered)
+      console.warn(`[BALLOT REJECTED] Ballot ID: ${vote._id}: ${err.message}`);
     }
   }
+
 
   const sorted     = Object.values(map).sort((a, b) => b.voteCount - a.voteCount);
   const totalVotes = sorted.reduce((s, c) => s + c.voteCount, 0);

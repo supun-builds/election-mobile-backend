@@ -2,6 +2,10 @@
 .env
 .env*.local
 
+# Secrets and RSA Keys
+keys/
+*.pem
+
 # Dependencies
 node_modules/
 
